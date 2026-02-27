@@ -1,44 +1,54 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 interface Memory {
-  id: number;
+  id: string;
   text: string;
   timestamp: string;
-  image?: string; // base64 data URL
+  image?: string | null;
 }
 
 interface GraphNode {
-  id: number;
+  id: string;
   x: number;
   y: number;
   vx: number;
   vy: number;
   text: string;
   timestamp: string;
-  image?: string;
+  image?: string | null;
 }
 
 const MemoryNavigator = () => {
   const [input, setInput] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [memories, setMemories] = useState<Memory[]>(() => {
-    const saved = localStorage.getItem("neurolink-memories");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showAnchor, setShowAnchor] = useState(false);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
-  const [dragNode, setDragNode] = useState<number | null>(null);
-  const [selectedNode, setSelectedNode] = useState<number | null>(null);
-  const [hoveredNode, setHoveredNode] = useState<number | null>(null);
+  const [dragNode, setDragNode] = useState<string | null>(null);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const animRef = useRef<number>();
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dimensions, setDimensions] = useState({ width: 600, height: 350 });
 
+  // Fetch memories from database
   useEffect(() => {
-    localStorage.setItem("neurolink-memories", JSON.stringify(memories));
-  }, [memories]);
+    const fetchMemories = async () => {
+      const { data, error } = await supabase
+        .from("memories")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (!error && data) {
+        setMemories(data.map((d) => ({ id: d.id, text: d.text, timestamp: d.timestamp, image: d.image })));
+      }
+      setLoading(false);
+    };
+    fetchMemories();
+  }, []);
 
   // Measure container
   useEffect(() => {
@@ -135,7 +145,6 @@ const MemoryNavigator = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 500_000) {
-      // Resize large images
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
@@ -162,27 +171,32 @@ const MemoryNavigator = () => {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const storeMemory = () => {
+  const storeMemory = async () => {
     if (!input.trim()) return;
-    const newMemory: Memory = {
-      id: Date.now(),
-      text: input.trim(),
-      timestamp: new Date().toLocaleTimeString("en-US", { hour12: false }),
-      image: imagePreview || undefined,
-    };
-    setMemories((prev) => [...prev, newMemory]);
-    setInput("");
-    clearImage();
-    setShowAnchor(true);
-    setTimeout(() => setShowAnchor(false), 2000);
+    const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
+    const { data, error } = await supabase
+      .from("memories")
+      .insert({ text: input.trim(), timestamp: ts, image: imagePreview || null })
+      .select()
+      .single();
+    if (!error && data) {
+      setMemories((prev) => [...prev, { id: data.id, text: data.text, timestamp: data.timestamp, image: data.image }]);
+      setInput("");
+      clearImage();
+      setShowAnchor(true);
+      setTimeout(() => setShowAnchor(false), 2000);
+    }
   };
 
-  const deleteMemory = (id: number) => {
-    setMemories((prev) => prev.filter((m) => m.id !== id));
-    if (selectedNode === id) setSelectedNode(null);
+  const deleteMemory = async (id: string) => {
+    const { error } = await supabase.from("memories").delete().eq("id", id);
+    if (!error) {
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+      if (selectedNode === id) setSelectedNode(null);
+    }
   };
 
-  const handleMouseDown = useCallback((id: number, e: React.MouseEvent) => {
+  const handleMouseDown = useCallback((id: string, e: React.MouseEvent) => {
     e.preventDefault();
     setDragNode(id);
   }, []);
@@ -210,7 +224,7 @@ const MemoryNavigator = () => {
         <div className="w-2 h-2 rounded-full bg-neon-cyan animate-pulse" />
         <h3 className="font-display text-sm tracking-[0.2em] text-primary">MEMORY NAVIGATOR</h3>
         <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-          {memories.length} NODE{memories.length !== 1 ? "S" : ""}
+          {loading ? "LOADING…" : `${memories.length} NODE${memories.length !== 1 ? "S" : ""}`}
         </span>
       </div>
       <p className="font-mono text-xs text-muted-foreground mb-4">
@@ -276,7 +290,7 @@ const MemoryNavigator = () => {
       >
         {nodes.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center font-mono text-xs text-muted-foreground/50">
-            No nodes. Store a memory to begin mapping.
+            {loading ? "Loading memories…" : "No nodes. Store a memory to begin mapping."}
           </div>
         ) : (
           <svg
@@ -306,14 +320,6 @@ const MemoryNavigator = () => {
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
-              {/* Clip paths for node images */}
-              {nodes.map((n) =>
-                n.image ? (
-                  <clipPath key={`clip-${n.id}`} id={`clip-${n.id}`}>
-                    <circle cx={n.x} cy={n.y} r={selectedNode === n.id || hoveredNode === n.id ? 14 : 10} />
-                  </clipPath>
-                ) : null
-              )}
             </defs>
             <rect width="100%" height="100%" fill="url(#grid)" />
 
@@ -325,21 +331,14 @@ const MemoryNavigator = () => {
               return (
                 <g key={`edge-${n.id}`}>
                   <line
-                    x1={prev.x}
-                    y1={prev.y}
-                    x2={n.x}
-                    y2={n.y}
+                    x1={prev.x} y1={prev.y} x2={n.x} y2={n.y}
                     stroke={isActive ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.25)"}
                     strokeWidth={isActive ? 2 : 1}
                     filter={isActive ? "url(#glow)" : undefined}
                     strokeDasharray={isActive ? undefined : "4 4"}
                   />
-                  <circle
-                    cx={(prev.x + n.x) / 2}
-                    cy={(prev.y + n.y) / 2}
-                    r={2}
-                    fill={isActive ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.3)"}
-                  />
+                  <circle cx={(prev.x + n.x) / 2} cy={(prev.y + n.y) / 2} r={2}
+                    fill={isActive ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.3)"} />
                 </g>
               );
             })}
@@ -360,113 +359,51 @@ const MemoryNavigator = () => {
                   onMouseLeave={() => setHoveredNode(null)}
                   className="cursor-pointer"
                 >
-                  {/* Outer ring pulse */}
                   {active && (
-                    <circle
-                      cx={n.x}
-                      cy={n.y}
-                      r={22}
-                      fill="none"
-                      stroke="hsl(var(--primary) / 0.3)"
-                      strokeWidth={1}
-                      filter="url(#glow-strong)"
-                    >
+                    <circle cx={n.x} cy={n.y} r={22} fill="none"
+                      stroke="hsl(var(--primary) / 0.3)" strokeWidth={1} filter="url(#glow-strong)">
                       <animate attributeName="r" values="18;24;18" dur="2s" repeatCount="indefinite" />
                       <animate attributeName="opacity" values="0.6;0.2;0.6" dur="2s" repeatCount="indefinite" />
                     </circle>
                   )}
-                  {/* Image indicator ring for nodes with photos */}
                   {hasImage && (
-                    <circle
-                      cx={n.x}
-                      cy={n.y}
-                      r={r + 3}
-                      fill="none"
-                      stroke="hsl(var(--primary) / 0.6)"
-                      strokeWidth={1.5}
-                      strokeDasharray="3 2"
-                    />
+                    <circle cx={n.x} cy={n.y} r={r + 3} fill="none"
+                      stroke="hsl(var(--primary) / 0.6)" strokeWidth={1.5} strokeDasharray="3 2" />
                   )}
-                  {/* Node circle / image */}
                   {hasImage ? (
                     <>
-                      <circle
-                        cx={n.x}
-                        cy={n.y}
-                        r={r}
-                        fill="hsl(var(--card))"
+                      <circle cx={n.x} cy={n.y} r={r} fill="hsl(var(--card))"
                         stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
-                        strokeWidth={active ? 2 : 1}
-                        filter={active ? "url(#glow)" : undefined}
-                      />
-                      <image
-                        href={n.image}
-                        x={n.x - r}
-                        y={n.y - r}
-                        width={r * 2}
-                        height={r * 2}
+                        strokeWidth={active ? 2 : 1} filter={active ? "url(#glow)" : undefined} />
+                      <image href={n.image!} x={n.x - r} y={n.y - r} width={r * 2} height={r * 2}
                         clipPath={`circle(${r}px at ${r}px ${r}px)`}
                         style={{ clipPath: `circle(${r}px at ${r}px ${r}px)` }}
-                        preserveAspectRatio="xMidYMid slice"
-                        opacity={active ? 1 : 0.8}
-                      />
-                      {/* Overlay border */}
-                      <circle
-                        cx={n.x}
-                        cy={n.y}
-                        r={r}
-                        fill="none"
+                        preserveAspectRatio="xMidYMid slice" opacity={active ? 1 : 0.8} />
+                      <circle cx={n.x} cy={n.y} r={r} fill="none"
                         stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
-                        strokeWidth={active ? 2 : 1}
-                        filter={active ? "url(#glow)" : undefined}
-                      />
+                        strokeWidth={active ? 2 : 1} filter={active ? "url(#glow)" : undefined} />
                     </>
                   ) : (
                     <>
-                      <circle
-                        cx={n.x}
-                        cy={n.y}
-                        r={r}
+                      <circle cx={n.x} cy={n.y} r={r}
                         fill={isSelected ? "hsl(var(--primary) / 0.3)" : "hsl(var(--card))"}
                         stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
-                        strokeWidth={active ? 2 : 1}
-                        filter={active ? "url(#glow)" : undefined}
-                        className="transition-all duration-200"
-                      />
-                      <text
-                        x={n.x}
-                        y={n.y + 1}
-                        textAnchor="middle"
-                        dominantBaseline="central"
+                        strokeWidth={active ? 2 : 1} filter={active ? "url(#glow)" : undefined}
+                        className="transition-all duration-200" />
+                      <text x={n.x} y={n.y + 1} textAnchor="middle" dominantBaseline="central"
                         fill={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.7)"}
-                        fontSize={active ? 10 : 8}
-                        fontFamily="'Rajdhani', monospace"
-                        fontWeight="bold"
-                      >
+                        fontSize={active ? 10 : 8} fontFamily="'Rajdhani', monospace" fontWeight="bold">
                         {i + 1}
                       </text>
                     </>
                   )}
-                  {/* Hover label */}
                   {isHovered && !isSelected && (
                     <g>
-                      <rect
-                        x={n.x + 16}
-                        y={n.y - 12}
-                        width={Math.min(n.text.length * 6 + 16, 180)}
-                        height={22}
-                        rx={2}
-                        fill="hsl(var(--card))"
-                        stroke="hsl(var(--primary) / 0.4)"
-                        strokeWidth={1}
-                      />
-                      <text
-                        x={n.x + 24}
-                        y={n.y + 1}
-                        fill="hsl(var(--foreground) / 0.8)"
-                        fontSize={9}
-                        fontFamily="'Rajdhani', monospace"
-                      >
+                      <rect x={n.x + 16} y={n.y - 12}
+                        width={Math.min(n.text.length * 6 + 16, 180)} height={22} rx={2}
+                        fill="hsl(var(--card))" stroke="hsl(var(--primary) / 0.4)" strokeWidth={1} />
+                      <text x={n.x + 24} y={n.y + 1} fill="hsl(var(--foreground) / 0.8)"
+                        fontSize={9} fontFamily="'Rajdhani', monospace">
                         {n.text.length > 26 ? n.text.slice(0, 26) + "…" : n.text}
                       </text>
                     </g>
@@ -485,39 +422,32 @@ const MemoryNavigator = () => {
             <span className="font-mono text-[10px] text-primary tracking-widest">
               NODE {nodes.findIndex((n) => n.id === selectedMemory.id) + 1} — {selectedMemory.timestamp}
             </span>
-            <button
-              onClick={() => deleteMemory(selectedMemory.id)}
-              className="font-mono text-[10px] text-destructive/70 hover:text-destructive transition-colors"
-            >
+            <button onClick={() => deleteMemory(selectedMemory.id)}
+              className="font-mono text-[10px] text-destructive/70 hover:text-destructive transition-colors">
               [DELETE]
             </button>
           </div>
           {selectedMemory.image && (
             <div className="mb-3">
-              <img
-                src={selectedMemory.image}
-                alt="Memory attachment"
-                className="w-full max-h-48 object-contain rounded-sm border border-primary/20"
-              />
+              <img src={selectedMemory.image} alt="Memory attachment"
+                className="w-full max-h-48 object-contain rounded-sm border border-primary/20" />
             </div>
           )}
           <p className="font-mono text-xs text-foreground/80">{selectedMemory.text}</p>
         </div>
       )}
 
-      {/* Memory list (compact) */}
+      {/* Memory list */}
       {memories.length > 0 && (
         <div className="mt-3 space-y-1 max-h-32 overflow-y-auto">
           {memories.map((m, i) => (
-            <div
-              key={m.id}
+            <div key={m.id}
               onClick={() => setSelectedNode(selectedNode === m.id ? null : m.id)}
               className={`flex items-center gap-3 px-3 py-1.5 rounded-sm cursor-pointer transition-colors text-[10px] font-mono ${
                 selectedNode === m.id
                   ? "bg-primary/10 border border-primary/30"
                   : "bg-muted/20 border border-transparent hover:bg-muted/40"
-              }`}
-            >
+              }`}>
               <span className="text-primary/60 w-4">{i + 1}</span>
               {m.image && (
                 <img src={m.image} alt="" className="w-4 h-4 rounded-sm object-cover border border-primary/30 flex-shrink-0" />
