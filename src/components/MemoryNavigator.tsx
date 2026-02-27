@@ -4,6 +4,7 @@ interface Memory {
   id: number;
   text: string;
   timestamp: string;
+  image?: string; // base64 data URL
 }
 
 interface GraphNode {
@@ -14,10 +15,12 @@ interface GraphNode {
   vy: number;
   text: string;
   timestamp: string;
+  image?: string;
 }
 
 const MemoryNavigator = () => {
   const [input, setInput] = useState("");
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [memories, setMemories] = useState<Memory[]>(() => {
     const saved = localStorage.getItem("neurolink-memories");
     return saved ? JSON.parse(saved) : [];
@@ -30,6 +33,7 @@ const MemoryNavigator = () => {
   const svgRef = useRef<SVGSVGElement>(null);
   const animRef = useRef<number>();
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dimensions, setDimensions] = useState({ width: 600, height: 350 });
 
   useEffect(() => {
@@ -55,7 +59,7 @@ const MemoryNavigator = () => {
       const cy = dimensions.height / 2;
       return memories.map((m, i) => {
         const existing = prev.find((n) => n.id === m.id);
-        if (existing) return { ...existing, text: m.text, timestamp: m.timestamp };
+        if (existing) return { ...existing, text: m.text, timestamp: m.timestamp, image: m.image };
         const angle = (i / Math.max(memories.length, 1)) * Math.PI * 2 + Math.random() * 0.5;
         const radius = 60 + Math.random() * Math.min(cx, cy) * 0.5;
         return {
@@ -66,6 +70,7 @@ const MemoryNavigator = () => {
           vy: 0,
           text: m.text,
           timestamp: m.timestamp,
+          image: m.image,
         };
       });
     });
@@ -85,11 +90,9 @@ const MemoryNavigator = () => {
         for (let i = 0; i < next.length; i++) {
           if (next[i].id === dragNode) continue;
 
-          // Center gravity
           next[i].vx += (cx - next[i].x) * 0.002;
           next[i].vy += (cy - next[i].y) * 0.002;
 
-          // Repulsion
           for (let j = 0; j < next.length; j++) {
             if (i === j) continue;
             const dx = next[i].x - next[j].x;
@@ -100,7 +103,6 @@ const MemoryNavigator = () => {
             next[i].vy += (dy / dist) * force;
           }
 
-          // Edge links (spring)
           if (i > 0) {
             const dx = next[i].x - next[i - 1].x;
             const dy = next[i].y - next[i - 1].y;
@@ -111,13 +113,11 @@ const MemoryNavigator = () => {
             next[i].vy -= (dy / dist) * force;
           }
 
-          // Damping
           next[i].vx *= 0.85;
           next[i].vy *= 0.85;
           next[i].x += next[i].vx;
           next[i].y += next[i].vy;
 
-          // Bounds
           next[i].x = Math.max(padding, Math.min(dimensions.width - padding, next[i].x));
           next[i].y = Math.max(padding, Math.min(dimensions.height - padding, next[i].y));
         }
@@ -131,15 +131,48 @@ const MemoryNavigator = () => {
     };
   }, [nodes.length, dragNode, dimensions]);
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 500_000) {
+      // Resize large images
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const max = 200;
+        let w = img.width, h = img.height;
+        if (w > h) { h = (h / w) * max; w = max; } else { w = (w / h) * max; h = max; }
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
+        setImagePreview(canvas.toDataURL("image/jpeg", 0.7));
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => setImagePreview(reader.result as string);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const clearImage = () => {
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const storeMemory = () => {
     if (!input.trim()) return;
     const newMemory: Memory = {
       id: Date.now(),
       text: input.trim(),
       timestamp: new Date().toLocaleTimeString("en-US", { hour12: false }),
+      image: imagePreview || undefined,
     };
     setMemories((prev) => [...prev, newMemory]);
     setInput("");
+    clearImage();
     setShowAnchor(true);
     setTimeout(() => setShowAnchor(false), 2000);
   };
@@ -181,11 +214,11 @@ const MemoryNavigator = () => {
         </span>
       </div>
       <p className="font-mono text-xs text-muted-foreground mb-4">
-        Record decisions. Nodes connect chronologically in the cognitive map.
+        Record decisions. Attach photos. Nodes connect chronologically in the cognitive map.
       </p>
 
       {/* Input */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-2">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -199,6 +232,34 @@ const MemoryNavigator = () => {
         >
           STORE
         </button>
+      </div>
+
+      {/* Photo attach row */}
+      <div className="flex items-center gap-3 mb-4">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleImageSelect}
+          className="hidden"
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="flex items-center gap-1.5 px-3 py-1.5 border border-border/60 text-muted-foreground font-mono text-[10px] tracking-wider hover:border-primary/50 hover:text-primary transition-colors rounded-sm"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <polyline points="21 15 16 10 5 21" />
+          </svg>
+          ATTACH PHOTO
+        </button>
+        {imagePreview && (
+          <div className="flex items-center gap-2 animate-fade-in">
+            <img src={imagePreview} alt="preview" className="w-8 h-8 rounded-sm border border-primary/40 object-cover" />
+            <button onClick={clearImage} className="font-mono text-[10px] text-destructive/70 hover:text-destructive transition-colors">[×]</button>
+          </div>
+        )}
       </div>
 
       {showAnchor && (
@@ -227,7 +288,6 @@ const MemoryNavigator = () => {
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
           >
-            {/* Grid background */}
             <defs>
               <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
                 <path d="M 30 0 L 0 0 0 30" fill="none" stroke="hsl(var(--border))" strokeWidth="0.3" opacity="0.3" />
@@ -246,6 +306,14 @@ const MemoryNavigator = () => {
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
+              {/* Clip paths for node images */}
+              {nodes.map((n) =>
+                n.image ? (
+                  <clipPath key={`clip-${n.id}`} id={`clip-${n.id}`}>
+                    <circle cx={n.x} cy={n.y} r={selectedNode === n.id || hoveredNode === n.id ? 14 : 10} />
+                  </clipPath>
+                ) : null
+              )}
             </defs>
             <rect width="100%" height="100%" fill="url(#grid)" />
 
@@ -266,7 +334,6 @@ const MemoryNavigator = () => {
                     filter={isActive ? "url(#glow)" : undefined}
                     strokeDasharray={isActive ? undefined : "4 4"}
                   />
-                  {/* Direction arrow */}
                   <circle
                     cx={(prev.x + n.x) / 2}
                     cy={(prev.y + n.y) / 2}
@@ -282,6 +349,8 @@ const MemoryNavigator = () => {
               const isSelected = selectedNode === n.id;
               const isHovered = hoveredNode === n.id;
               const active = isSelected || isHovered;
+              const r = active ? 14 : 10;
+              const hasImage = !!n.image;
               return (
                 <g
                   key={n.id}
@@ -306,30 +375,78 @@ const MemoryNavigator = () => {
                       <animate attributeName="opacity" values="0.6;0.2;0.6" dur="2s" repeatCount="indefinite" />
                     </circle>
                   )}
-                  {/* Node circle */}
-                  <circle
-                    cx={n.x}
-                    cy={n.y}
-                    r={active ? 14 : 10}
-                    fill={isSelected ? "hsl(var(--primary) / 0.3)" : "hsl(var(--card))"}
-                    stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
-                    strokeWidth={active ? 2 : 1}
-                    filter={active ? "url(#glow)" : undefined}
-                    className="transition-all duration-200"
-                  />
-                  {/* Node index */}
-                  <text
-                    x={n.x}
-                    y={n.y + 1}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fill={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.7)"}
-                    fontSize={active ? 10 : 8}
-                    fontFamily="'Rajdhani', monospace"
-                    fontWeight="bold"
-                  >
-                    {i + 1}
-                  </text>
+                  {/* Image indicator ring for nodes with photos */}
+                  {hasImage && (
+                    <circle
+                      cx={n.x}
+                      cy={n.y}
+                      r={r + 3}
+                      fill="none"
+                      stroke="hsl(var(--primary) / 0.6)"
+                      strokeWidth={1.5}
+                      strokeDasharray="3 2"
+                    />
+                  )}
+                  {/* Node circle / image */}
+                  {hasImage ? (
+                    <>
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={r}
+                        fill="hsl(var(--card))"
+                        stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
+                        strokeWidth={active ? 2 : 1}
+                        filter={active ? "url(#glow)" : undefined}
+                      />
+                      <image
+                        href={n.image}
+                        x={n.x - r}
+                        y={n.y - r}
+                        width={r * 2}
+                        height={r * 2}
+                        clipPath={`circle(${r}px at ${r}px ${r}px)`}
+                        style={{ clipPath: `circle(${r}px at ${r}px ${r}px)` }}
+                        preserveAspectRatio="xMidYMid slice"
+                        opacity={active ? 1 : 0.8}
+                      />
+                      {/* Overlay border */}
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={r}
+                        fill="none"
+                        stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
+                        strokeWidth={active ? 2 : 1}
+                        filter={active ? "url(#glow)" : undefined}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={r}
+                        fill={isSelected ? "hsl(var(--primary) / 0.3)" : "hsl(var(--card))"}
+                        stroke={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
+                        strokeWidth={active ? 2 : 1}
+                        filter={active ? "url(#glow)" : undefined}
+                        className="transition-all duration-200"
+                      />
+                      <text
+                        x={n.x}
+                        y={n.y + 1}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fill={active ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.7)"}
+                        fontSize={active ? 10 : 8}
+                        fontFamily="'Rajdhani', monospace"
+                        fontWeight="bold"
+                      >
+                        {i + 1}
+                      </text>
+                    </>
+                  )}
                   {/* Hover label */}
                   {isHovered && !isSelected && (
                     <g>
@@ -375,6 +492,15 @@ const MemoryNavigator = () => {
               [DELETE]
             </button>
           </div>
+          {selectedMemory.image && (
+            <div className="mb-3">
+              <img
+                src={selectedMemory.image}
+                alt="Memory attachment"
+                className="w-full max-h-48 object-contain rounded-sm border border-primary/20"
+              />
+            </div>
+          )}
           <p className="font-mono text-xs text-foreground/80">{selectedMemory.text}</p>
         </div>
       )}
@@ -386,13 +512,16 @@ const MemoryNavigator = () => {
             <div
               key={m.id}
               onClick={() => setSelectedNode(selectedNode === m.id ? null : m.id)}
-              className={`flex gap-3 px-3 py-1.5 rounded-sm cursor-pointer transition-colors text-[10px] font-mono ${
+              className={`flex items-center gap-3 px-3 py-1.5 rounded-sm cursor-pointer transition-colors text-[10px] font-mono ${
                 selectedNode === m.id
                   ? "bg-primary/10 border border-primary/30"
                   : "bg-muted/20 border border-transparent hover:bg-muted/40"
               }`}
             >
               <span className="text-primary/60 w-4">{i + 1}</span>
+              {m.image && (
+                <img src={m.image} alt="" className="w-4 h-4 rounded-sm object-cover border border-primary/30 flex-shrink-0" />
+              )}
               <span className="text-muted-foreground whitespace-nowrap">{m.timestamp}</span>
               <span className="text-foreground/70 truncate">{m.text}</span>
             </div>
